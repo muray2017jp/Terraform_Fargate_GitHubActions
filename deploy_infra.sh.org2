@@ -1,0 +1,126 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# スクリプトの場所へ移動
+SCRIPT_DIR=$(cd $(dirname $0); pwd)
+cd $SCRIPT_DIR
+
+AWS_REGION="ap-northeast-1"
+ACCOUNT_ID="455110051621"
+
+CLUSTER_NAME="example-prod-foobar"
+SERVICE_NAME="example-prod-foobar"
+
+APP_DIR="laravel-fargate-app"
+
+PHP_IMAGE="example-prod-foobar-php"
+NGINX_IMAGE="example-prod-foobar-nginx"
+
+PHP_REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PHP_IMAGE}"
+NGINX_REPO="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${NGINX_IMAGE}"
+
+TAG="latest"
+
+BASE_DIR="laravel-fargate-infra/envs/prod"
+
+# ===============================
+# Terraform
+# ===============================
+
+apply_tf () {
+
+  DIR=$1
+
+  echo ""
+  echo "Deploying: $DIR"
+
+  cd $DIR
+  terraform init -upgrade -reconfigure
+  terraform plan
+  terraform apply -auto-approve
+  cd $SCRIPT_DIR
+}
+
+echo "=============================="
+echo "Terraform Deploy"
+echo "=============================="
+
+apply_tf $BASE_DIR/network/main
+apply_tf $BASE_DIR/log/alb
+apply_tf $BASE_DIR/log/app_foobar
+apply_tf $BASE_DIR/log/db_foobar
+apply_tf $BASE_DIR/db/foobar
+apply_tf $BASE_DIR/cache/foobar
+apply_tf $BASE_DIR/routing/appfoobar_link
+apply_tf $BASE_DIR/app/foobar
+
+echo "Terraform completed"
+
+# ===============================
+# ECR Login
+# ===============================
+
+echo "Login to ECR..."
+
+aws ecr get-login-password \
+--region ${AWS_REGION} | \
+docker login \
+--username AWS \
+--password-stdin \
+${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+# ===============================
+# Build PHP
+# ===============================
+
+echo "Building PHP image..."
+
+docker build \
+-t ${PHP_IMAGE}:${TAG} \
+-f ${APP_DIR}/infra/docker/php/Dockerfile \
+${APP_DIR}
+
+docker tag ${PHP_IMAGE}:${TAG} ${PHP_REPO}:${TAG}
+
+docker push ${PHP_REPO}:${TAG}
+
+# ===============================
+# Build Nginx
+# ===============================
+
+echo "Building Nginx image..."
+
+docker build \
+-t ${NGINX_IMAGE}:${TAG} \
+-f ${APP_DIR}/infra/docker/nginx/Dockerfile \
+${APP_DIR}
+
+docker tag ${NGINX_IMAGE}:${TAG} ${NGINX_REPO}:${TAG}
+
+docker push ${NGINX_REPO}:${TAG}
+
+# ===============================
+# ECR反映待ち
+# ===============================
+
+echo "Waiting for ECR propagation..."
+
+sleep 20
+
+# ===============================
+# ECS Deploy
+# ===============================
+
+echo "Updating ECS service..."
+
+aws ecs update-service \
+--cluster ${CLUSTER_NAME} \
+--service ${SERVICE_NAME} \
+--force-new-deployment \
+--region ${AWS_REGION}
+
+echo ""
+echo "================================"
+echo "Deploy Started Successfully 🚀"
+echo "================================"

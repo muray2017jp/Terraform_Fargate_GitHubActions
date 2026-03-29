@@ -1,0 +1,44 @@
+#!/bin/bash
+
+set -e
+
+BASE_DIR="laravel-fargate-infra/envs/prod"
+
+echo "=============================="
+echo "Terraform Infrastructure Deploy"
+echo "=============================="
+
+apply_tf () {
+  DIR=$1
+
+  echo ""
+  echo "------------------------------"
+  echo "Deploying: $DIR"
+  echo "------------------------------"
+
+  cd $DIR
+
+  terraform init -upgrade -reconfigure
+  terraform plan
+  terraform apply -auto-approve
+
+  cd - > /dev/null
+}
+
+apply_tf $BASE_DIR/network/main
+
+apply_tf $BASE_DIR/log/alb
+apply_tf $BASE_DIR/log/app_foobar
+apply_tf $BASE_DIR/log/db_foobar
+
+apply_tf $BASE_DIR/db/foobar
+apply_tf $BASE_DIR/cache/foobar
+
+apply_tf $BASE_DIR/routing/appfoobar_link
+
+apply_tf $BASE_DIR/app/foobar
+
+echo ""
+echo "=============================="
+echo "Terraform Deploy Completed"
+echo "=============================="
