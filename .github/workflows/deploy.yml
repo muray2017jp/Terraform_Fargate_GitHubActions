@@ -1,0 +1,44 @@
+name: deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to AWS Fargate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure aws credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.PROD_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-1
+
+      # --- キャッシュ機能ここから ---
+      - name: Cache composer dependencies
+        uses: actions/cache@v3
+        with:
+          path: laravel-fargate-app/backend/vendor
+          key: composer-${{ hashFiles('laravel-fargate-app/backend/composer.lock') }}
+
+      - name: Cache npm dependencies
+        uses: actions/cache@v3
+        with:
+          path: laravel-fargate-app/backend/node_modules
+          key: npm-${{ hashFiles('laravel-fargate-app/backend/package-lock.json') }}
+      # --- キャッシュ機能ここまで ---
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Run deploy_infra.sh
+        run: |
+          chmod +x ./deploy_infra.sh
+          ./deploy_infra.sh
