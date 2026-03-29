@@ -44,5 +44,8 @@ COPY --chown=www-data:www-data ./backend /work/backend
 
 WORKDIR /work/backend
 
+# ★ ここから追加：本番用のライブラリインストールを実行
+RUN composer install --no-dev --optimize-autoloader --no-interaction --no-progress
+
 # 実行時：共有ボリューム用のディレクトリ作成とPHP-FPMの起動
 CMD ["sh", "-c", "mkdir -p /var/run/php-fpm && chown -R www-data:www-data /var/run/php-fpm && php-fpm"]
