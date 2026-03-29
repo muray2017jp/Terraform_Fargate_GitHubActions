@@ -1,0 +1,262 @@
+===== ./shared_locals.tf =====
+locals {
+  name_prefix = "${local.system_name}-${local.env_name}"
+  system_name = "example"
+  env_name    = "prod"
+}
+===== ./data.tf =====
+data "aws_kms_alias" "rds" {
+  name = "alias/aws/rds"
+}
+
+data "terraform_remote_state" "network_main" {
+  backend = "s3"
+
+  config = {
+    bucket = "jyouhou.net-tfstate"
+    key    = "${local.system_name}/${local.env_name}/network/main_v1.0.0.tfstate"
+    region = "ap-northeast-1"
+  }
+}
+===== ./locals.tf =====
+locals {
+  service_name = "foobar"
+}
+===== ./outputs.tf =====
+output "elasticache_replication_group_this_primary_endpoint_address" {
+  value = aws_elasticache_replication_group.this.primary_endpoint_address
+}===== ./provider.tf =====
+provider "aws" {
+  region = "ap-northeast-1"
+  profile = "admin"
+
+  default_tags {
+    tags = {
+      Env    = "prod"
+      System = "example"
+    }
+  }
+}
+
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"
+    }
+  }
+
+  required_version = ">= 1.14.6"
+}===== ./db_instance.tf =====
+# 1. パスワードをランダム生成（16文字、特殊文字なしで安全性を確保）
+resource "random_password" "db_password" {
+  length           = 16
+  special          = false
+  override_special = "!#$%&*()-_=+[]{}<>:?"
+}
+
+# 2. 生成したパスワードをパラメータストア(SSM)に保存
+resource "aws_ssm_parameter" "db_password" {
+  name  = "/${local.system_name}/${local.env_name}/${local.service_name}/DB_PASSWORD"
+  type  = "SecureString" # 暗号化して保存（標準パラメータなのでストレージ無料）
+  value = random_password.db_password.result
+
+  tags = {
+    Name = "${local.system_name}-${local.env_name}-${local.service_name}-db-password"
+  }
+}
+
+resource "aws_db_instance" "this" {
+  # Engine options
+  engine         = "mysql"
+  engine_version = "8.0"
+
+  # Settings
+  identifier = "${local.system_name}-${local.env_name}-${local.service_name}"
+
+  # Credentials Settings
+  username = local.service_name
+  # 修正箇所: ハードコードを廃止し、生成されたパスワードを参照
+  password = random_password.db_password.result
+
+  # DB instance class
+  instance_class = "db.t3.micro"
+
+  # Storage
+  storage_type          = "gp3"
+  allocated_storage     = 20
+  max_allocated_storage = 0
+
+  # Availability & durability
+  multi_az = false
+
+  # Connectivity
+  db_subnet_group_name = data.terraform_remote_state.network_main.outputs.db_subnet_group_this_id
+  publicly_accessible  = false
+  vpc_security_group_ids = [
+    data.terraform_remote_state.network_main.outputs.security_group_db_foobar_id,
+  ]
+  availability_zone = "ap-northeast-1a"
+  port              = 3306
+
+  # Database authentication
+  iam_database_authentication_enabled = false
+
+  # Database options
+  db_name              = local.service_name
+  parameter_group_name = aws_db_parameter_group.this.name
+  option_group_name    = aws_db_option_group.this.name
+
+  # Backup
+  backup_retention_period  = 1
+  backup_window            = "17:00-18:00"
+  copy_tags_to_snapshot    = true
+  delete_automated_backups = true
+  skip_final_snapshot      = true
+
+  # Encryption
+  storage_encrypted = true
+  kms_key_id        = data.aws_kms_alias.rds.target_key_arn
+
+  # Performance Insights (db.t3.micro, db.t3.small are not supported)
+  performance_insights_enabled = false
+
+  # Monitoring
+  monitoring_interval = 60
+  monitoring_role_arn = aws_iam_role.rds_monitoring_role.arn
+
+  # Log exports
+  enabled_cloudwatch_logs_exports = [
+    "error",
+    "general",
+    "slowquery"
+  ]
+
+  # Maintenance
+  auto_minor_version_upgrade = false
+  maintenance_window         = "fri:18:00-fri:19:00"
+
+  # Deletion protection
+  deletion_protection = false
+
+  tags = {
+    Name = "${local.system_name}-${local.env_name}-${local.service_name}"
+  }
+}
+
+resource "aws_ssm_parameter" "db_host" {
+  name  = "/${local.system_name}/${local.env_name}/${local.service_name}/DB_HOST"
+  type  = "String"
+  value = aws_db_instance.this.address
+}===== ./db_parameter_group.tf =====
+resource "aws_db_parameter_group" "this" {
+  name = "${local.system_name}-${local.env_name}-${local.service_name}"
+
+  family = "mysql8.0"
+
+  parameter {
+    name  = "character_set_client"
+    value = "utf8mb4"
+  }
+
+  parameter {
+    name  = "character_set_connection"
+    value = "utf8mb4"
+  }
+
+  parameter {
+    name  = "character_set_database"
+    value = "utf8mb4"
+  }
+
+  parameter {
+    name  = "character_set_filesystem"
+    value = "utf8mb4"
+  }
+
+  parameter {
+    name  = "character_set_results"
+    value = "utf8mb4"
+  }
+
+  parameter {
+    name  = "character_set_server"
+    value = "utf8mb4"
+  }
+
+  parameter {
+    name  = "collation_server"
+    value = "utf8mb4_0900_ai_ci"
+  }
+
+  parameter {
+    name  = "general_log"
+    value = "1"
+  }
+
+  parameter {
+    name  = "slow_query_log"
+    value = "1"
+  }
+
+  parameter {
+    name  = "long_query_time"
+    value = "1.0"
+  }
+
+  parameter {
+    name  = "log_output"
+    value = "FILE"
+  }
+
+  tags = {
+    Name = "${local.system_name}-${local.env_name}-${local.service_name}"
+  }
+}
+===== ./iam.tf =====
+resource "aws_iam_role" "rds_monitoring_role" {
+  name = "${local.system_name}-${local.env_name}-${local.service_name}-rds-monitoring-role"
+
+  assume_role_policy = jsonencode(
+    {
+      "Version" : "2012-10-17",
+      "Statement" : [
+        {
+          "Effect" : "Allow",
+          "Principal" : {
+            "Service" : "monitoring.rds.amazonaws.com"
+          },
+          "Action" : "sts:AssumeRole"
+        }
+      ]
+    }
+  )
+}
+
+data "aws_iam_policy" "rds_enhanced_monitoring_role" {
+  arn = "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+}
+
+resource "aws_iam_role_policy_attachment" "rds_monitoring_role" {
+  role       = aws_iam_role.rds_monitoring_role.name
+  policy_arn = data.aws_iam_policy.rds_enhanced_monitoring_role.arn
+}
+===== ./backend.tf =====
+terraform {
+  backend "s3" {
+    bucket = "jyouhou.net-tfstate"
+    key    = "example/prod/db/foobar_v1.0.0.tfstate"
+    region = "ap-northeast-1"
+  }
+}
+===== ./db_option_group.tf =====
+resource "aws_db_option_group" "this" {
+  name = "${local.system_name}-${local.env_name}-${local.service_name}"
+
+  engine_name          = "mysql"
+  major_engine_version = "8.0"
+
+  tags = {
+    Name = "${local.system_name}-${local.env_name}-${local.service_name}"
+  }
+}
